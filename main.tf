@@ -1,121 +1,60 @@
-# Configure the Microsoft Azure Provider.
+# declare variables and defaults
+
+variable "vm_name" {
+  description = "VM name, up to 15 characters, numbers and letters, no special characters except hyphen -"
+}
+
+variable "admin_username"{
+  description = "Admin user name for the virtual machine"
+}
+
+variable "location" {
+  description = "Azure region"
+}
+
+variable "environment" {
+  default = "dev"
+}
+variable "vm_size" {
+  default = {
+    "dev"  = "Standard_B2s"
+    "prod" = "Standard_D2s_v3"
+  }
+}
+# end vars
+
 provider "azurerm" {
     version = ">= 2.5"
     features {}
 }
 
+
 # Create a resource group
 resource "azurerm_resource_group" "rg" {
-    name     = "${var.prefix}TFRG"
-    location = var.location
-    tags     = var.tags
+  name     = "myTFModuleGroup"
+  location = var.location
 }
 
-# Create virtual network
-resource "azurerm_virtual_network" "vnet" {
-    name                = "${var.prefix}TFVnet"
-    address_space       = ["10.0.0.0/16"]
-    location            = var.location
-    resource_group_name = azurerm_resource_group.rg.name
-    tags                = var.tags
+# Use the network module to create a vnet and subnet
+module "network" {
+  source              = "Azure/network/azurerm"
+  version             = "~> 3.0.1"
+  resource_group_name = azurerm_resource_group.rg.name
+  address_space       = "10.0.0.0/16"
+  subnet_names        = ["mySubnet"]
+  subnet_prefixes     = ["10.0.1.0/24"]
 }
 
-# Create subnet
-resource "azurerm_subnet" "subnet" {
-    name                 = "${var.prefix}TFSubnet"
-    resource_group_name  = azurerm_resource_group.rg.name
-    virtual_network_name = azurerm_virtual_network.vnet.name
-    address_prefix       = "10.0.1.0/24"
-}
-
-# Create public IP
-resource "azurerm_public_ip" "publicip" {
-    name                         = "${var.prefix}TFPublicIP"
-    location                     = var.location
-    resource_group_name          = azurerm_resource_group.rg.name
-    allocation_method            = "Dynamic"
-    tags                         = var.tags
-}
-
-# Create Network Security Group and rule
-resource "azurerm_network_security_group" "nsg" {
-    name                = "${var.prefix}TFNSG"
-    location            = var.location
-    resource_group_name = azurerm_resource_group.rg.name
-    tags                = var.tags
-
-    security_rule {
-        name                       = "SSH"
-        priority                   = 1001
-        direction                  = "Inbound"
-        access                     = "Allow"
-        protocol                   = "Tcp"
-        source_port_range          = "*"
-        destination_port_range     = "22"
-        source_address_prefix      = "*"
-        destination_address_prefix = "*"
-    }
-}
-
-# Create network interface
-resource "azurerm_network_interface" "nic" {
-    name                      = "${var.prefix}NIC"
-    location                  = var.location
-    resource_group_name       = azurerm_resource_group.rg.name
-    tags                      = var.tags
-
-    ip_configuration {
-        name                          = "${var.prefix}NICConfg"
-        subnet_id                     = azurerm_subnet.subnet.id
-        private_ip_address_allocation  = "dynamic"
-        public_ip_address_id          = azurerm_public_ip.publicip.id
-    }
-}
-
-resource "azurerm_network_interface_security_group_association" "nicnsg" {
-    network_interface_id = azurerm_network_interface.nic.id
-    network_security_group_id = azurerm_network_security_group.nsg.id
-}
-
-# Create a Linux virtual machine
-resource "azurerm_virtual_machine" "vm" {
-    name                  = "${var.prefix}TFVM"
-    location              = var.location
-    resource_group_name   = azurerm_resource_group.rg.name
-    network_interface_ids = [azurerm_network_interface.nic.id]
-    vm_size               = "Standard_DS1_v2"
-    tags                  = var.tags
-
-    storage_os_disk {
-        name              = "${var.prefix}OsDisk"
-        caching           = "ReadWrite"
-        create_option     = "FromImage"
-        managed_disk_type = "Premium_LRS"
-    }
-
-    storage_image_reference {
-        publisher = "Canonical"
-        offer     = "UbuntuServer"
-        sku       = lookup(var.sku, var.location)
-        version   = "latest"
-    }
-
-    os_profile {
-        computer_name  = "${var.prefix}TFVM"
-        admin_username = var.admin_username
-        admin_password = var.admin_password
-    }
-
-    os_profile_linux_config {
-        disable_password_authentication = false
-    }
-
-}
-
-output "ip" {
-    value = azurerm_public_ip.publicip.ip_address
-}
-
-output "os_sku" {
-    value = lookup(var.sku, var.location)
+# Use the compute module to create the VM
+module "compute" {
+  source         = "Azure/compute/azurerm"
+  version        = "~> 3.1.0"
+  resource_group_name = azurerm_resource_group.rg.name
+  vm_hostname    = var.vm_name
+  vnet_subnet_id = element(module.network.vnet_subnets, 0)
+  admin_username = var.admin_username
+  remote_port    = "22"
+  vm_os_simple   = "UbuntuServer"
+  vm_size        = var.vm_size[var.environment]
+  public_ip_dns  = ["samlearnsterraform"]
 }
